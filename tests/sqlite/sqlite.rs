@@ -794,3 +794,57 @@ async fn test_multiple_set_progress_handler_calls_drop_old_handler() -> anyhow::
     assert_eq!(1, Arc::strong_count(&ref_counted_object));
     Ok(())
 }
+
+#[sqlx_macros::test]
+async fn issue_2543() -> anyhow::Result<()> {
+    let pool: SqlitePool = SqlitePoolOptions::new()
+        .min_connections(2)
+        .connect(":memory:")
+        .await
+        .unwrap();
+
+    pool.execute(
+        r#"
+CREATE TABLE users (id INTEGER PRIMARY KEY,score INTEGER)
+            "#,
+    )
+    .await
+    .unwrap();
+    for i in 1..=1000_u32 {
+        let _ = sqlx::query("INSERT INTO users (id) VALUES (?)")
+            .bind(i)
+            .bind(i + 30)
+            .execute(&pool)
+            .await?;
+    }
+    for _ in 1..1000_u32 {
+        let _r1 = sqlx::query_as::<_, (i32,)>(
+            "UPDATE users SET score=score+? WHERE id=? RETURNING score",
+        )
+        .bind(30)
+        .bind(20)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .0;
+        let r2 = sqlx::query_as::<_, (i32,)>(
+            "UPDATE users SET score=score+? WHERE id=? RETURNING score",
+        )
+        .bind(100)
+        .bind(20)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .0;
+        let res_select =
+            sqlx::query_as::<_, (i32,)>("SELECT score FROM users WHERE id=? ORDER BY id")
+                .bind(20)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .0;
+        assert_eq!(r2, res_select);
+    }
+
+    Ok(())
+}
